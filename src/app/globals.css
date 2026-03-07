@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-cyber-bg: #050508;
+  --color-cyber-panel: #0d0d12;
+  --color-cyber-panel-border: #1a1a24;
+  --color-cyber-accent: #00f0ff;
+  --color-cyber-cyan: #00e5ff;
+  --color-cyber-red: #ff3333;
+  --color-cyber-green: #00ff66;
+  --color-cyber-amber: #ffaa00;
+  --color-cyber-text-primary: #e2e8f0;
+  --color-cyber-text-secondary: #94a3b8;
+  
+  --font-sans: var(--font-inter), var(--font-geist-sans), sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-cyber-bg);
+  color: var(--color-cyber-text-primary);
+  font-family: var(--font-sans);
+  margin: 0;
+  min-height: 100vh;
+  /* Glowing grid background */
+  background-image: 
+    linear-gradient(to right, rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Glassmorphism utilities */
+.cyber-glass {
+  background: rgba(13, 13, 18, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-cyber-panel-border);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+}
+
+.cyber-glass-glow {
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.1), inset 0 0 20px rgba(0, 240, 255, 0.05);
+}
+
+.glow-text {
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+}
+
+.glow-text-red {
+  text-shadow: 0 0 10px rgba(255, 51, 51, 0.5);
+}
