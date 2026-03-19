@@ -1,6 +1,12 @@
 const axios = require('axios');
+require('dotenv').config();
 
-const key = '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';
+const key = process.env.OPENROUTER_API_KEY;
+
+if (!key) {
+  console.error('ERROR: OPENROUTER_API_KEY not found in environment variables');
+  process.exit(1);
+}
 
 const models = [
   "google/gemini-flash-1.5-8b",

@@ -31,7 +31,10 @@ function ResultsContent() {
 
     useEffect(() => {
         async function fetchAnalysis() {
-            if (!query) return;
+            if (!query) {
+                setLoading(false);
+                return;
+            }
             try {
                 const res = await fetch("/api/analyze", {
                     method: "POST",

@@ -1,10 +1,11 @@
 const axios = require('axios');
 const fs = require('fs');
+require('dotenv').config();
 
 const keys = [
-  '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',
-  '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'
-];
+  process.env.OPENROUTER_API_KEY,
+  process.env.BACKUP_API_KEY
+].filter(Boolean);
 
 async function testAll() {
   const models = fs.readFileSync('free_models.txt', 'utf8').split('\n').filter(Boolean);

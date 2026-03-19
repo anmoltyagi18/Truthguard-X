@@ -3,6 +3,14 @@ import axios from "axios";
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
 
+// Check if API key is valid (not placeholder or empty)
+const isValidApiKey = (key: string | undefined) => {
+  if (!key) return false;
+  if (key.includes("your-key") || key.includes("YOUR_KEY")) return false;
+  if (key.length < 30) return false; // Valid OpenRouter keys are longer
+  return true;
+};
+
 export async function POST(req: NextRequest) {
   try {
     const { input } = await req.json();
@@ -11,10 +19,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing or empty text input." }, { status: 400 });
     }
 
-    if (!OPENROUTER_API_KEY) {
-      console.error("OPENROUTER_API_KEY is missing.");
-      return NextResponse.json({ error: "Server misconfiguration: API key is missing." }, { status: 500 });
-    }
+    const hasValidApiKey = isValidApiKey(OPENROUTER_API_KEY);
 
     const prompt = `You are a professional fact-checking AI engine used in a production system.
 
@@ -93,102 +98,139 @@ ${input}
 
 
     const models = [
-      "openai/gpt-4o-mini", // Fastest & most reliable
-      "meta-llama/llama-3.2-1b-instruct", // Fast fallback
-      "google/gemini-2.0-flash-001", // Alternative
+      "openai/gpt-4o-mini", // Fastest & most reliable (paid)
+      "google/gemini-2.0-flash-001", // Alternative (paid)
+      "google/gemini-2.0-flash-lite-preview-02-05:free", // Reliable free fallback
+      "meta-llama/llama-3.2-3b-instruct:free", // Fast free fallback
+      "mistralai/mistral-7b-instruct:free", // Legacy free fallback
+      "qwen/qwen-2.5-72b-instruct:free", // High quality free fallback
     ];
 
+    const backupKey = process.env.BACKUP_API_KEY?.trim();
     const apiKeys = [
-      OPENROUTER_API_KEY
-    ].filter(Boolean) as string[];
+      OPENROUTER_API_KEY,
+      backupKey
+    ].filter(k => k && !k.includes("your-key-here")) as string[];
 
     let aiResult = null;
     let lastError = "No AI models attempted.";
+    if (apiKeys.length === 0) {
+      lastError = "No valid API keys configured. Using local fallback.";
+    }
     let attemptCount = 0;
+
+    // Determine Referer dynamically for OpenRouter
+    const protocol = req.headers.get("x-forwarded-proto") || "http";
+    const host = req.headers.get("host") || "localhost:3000";
+    const referer = `${protocol}://${host}`;
 
     // Helper for delay
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-    for (const model of models) {
-      if (aiResult) break;
-      for (const apiKey of apiKeys) {
-        attemptCount++;
-        try {
-          console.log(`Attempt ${attemptCount}: Trying ${model}...`);
-          const response = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions',
-            {
-              model: model,
-              messages: [{ role: "user", content: prompt }],
-              temperature: 0.1,
-              // Some free models don't support response_format: json_object well
-              // response_format: { type: "json_object" } 
-            },
-            {
-              headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'HTTP-Referer': 'http://localhost:3000',
-                'X-Title': 'TruthGuard X',
-                'Content-Type': 'application/json'
+    if (apiKeys.length > 0) {
+      for (const model of models) {
+        if (aiResult) break;
+        for (const apiKey of apiKeys) {
+          attemptCount++;
+          try {
+            console.log(`Attempt ${attemptCount}: Trying ${model} with key ${apiKey.substring(0, 8)}...`);
+            const response = await axios.post(
+              'https://openrouter.ai/api/v1/chat/completions',
+              {
+                model: model,
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.1,
               },
-              timeout: 30000 // 30s timeout for slower models
-            }
-          );
+              {
+                headers: {
+                  'Authorization': `Bearer ${apiKey}`,
+                  'HTTP-Referer': referer,
+                  'X-Title': 'TruthGuard X',
+                  'Content-Type': 'application/json'
+                },
+                timeout: 30000 // 30s timeout for slower models
+              }
+            );
 
-          const content = response.data.choices[0].message.content;
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
+            const content = response.data.choices[0].message.content;
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
 
-          if (jsonMatch) {
-            try {
-              aiResult = JSON.parse(jsonMatch[0]);
-              if (aiResult && aiResult.credibility_score !== undefined) break;
-            } catch (pErr) {
-               console.warn("Partial JSON parse error, retrying...");
+            if (jsonMatch) {
+              try {
+                aiResult = JSON.parse(jsonMatch[0]);
+                if (aiResult && aiResult.credibility_score !== undefined) break;
+              } catch (pErr) {
+                console.warn("Partial JSON parse error, retrying...");
+              }
             }
+          } catch (apiError: any) {
+            const errMsg = apiError.response?.data?.error?.message || apiError.message;
+            lastError = errMsg;
+            
+            if (process.env.NODE_ENV === 'development') {
+              console.log(`Attempt ${attemptCount}: ${model} failed - ${errMsg}`);
+            }
+            
+            if (apiError.response?.status === 429) {
+              await sleep(1000); 
+            }
+            continue;
           }
-        } catch (apiError: any) {
-          const errMsg = apiError.response?.data?.error?.message || apiError.message;
-          lastError = `[Attempt ${attemptCount}] ${model} failed: ${errMsg}`;
-          console.warn(lastError);
-          
-          if (apiError.response?.status === 429) {
-            console.log("Rate limited. Sleeping...");
-            await sleep(1000); // 1s wait on 429
-          }
-          continue;
         }
       }
     }
 
     if (!aiResult) {
-      console.warn(`All ${attemptCount} model/key attempts failed. Using advanced local heuristic.`);
+      console.log(`AI analysis unavailable. Using local heuristic for: "${input.substring(0, 30)}..."`);
+      
       const lowerInput = input.toLowerCase();
       let score = 50;
       let type = "UNVERIFIABLE";
       let status = "Unverifiable";
-      let reasoning = `The analysis core is currently offline after ${attemptCount} attempts across multiple redundancy layers (Last Diagnostic: ${lastError}). Running local pattern matching.`;
+      let reasoning = "This claim requires verification against trusted sources. No matching patterns were found in the local intelligence buffer for a definitive assessment.";
 
-      // Basic Fact Recognition
-      // Patterns for heuristic matching
-      const basicFacts = ["sky is blue", "earth is round", "water is h2o", "sun rises", "2+2=4", "capital of france", "dog comes from wolf", "dog is made by wolf", "dog is descendant of wolf"];
-      const falsehoods = ["flat earth", "earth is flat", "vaccines cause", "fake news", "conspiracy", "salman khan married", "salman khan is married", "salman khan has a wife"];
-      const opinions = ["best", "love", "friend", "god", "believe", "opinion", "think", "beautiful", "worst"];
+      // Expanded Heuristic Matching
+      const patterns = [
+        {
+          keywords: ["sky is blue", "earth is round", "water is h2o", "sun rises", "2+2=4", "gravity", "evolution", "photosynthesis", "dna", "oxygen"],
+          score: 98, type: "FACTUAL", status: "Likely True",
+          reason: "This is a fundamental scientific or mathematical fact supported by universal consensus and observable evidence."
+        },
+        {
+          keywords: ["flat earth", "fake moon landing", "chemtrails", "vaccines cause autism", "illuminati", "5g causes", "salman khan married", "salman khan is married", "salman khan wife", "moon landing hoax", "earth hollow", "gravity fake", "disease man-made", "birds are fake", "nasa lies", "earth flat", "backwards moon", "fake disease", "poison vaccine", "government lies"],
+          score: 12, type: "FALSE", status: "Likely Fake",
+          reason: "This statement matches known misinformation patterns and conspiracy theories that have been thoroughly debunked by scientific and historical records."
+        },
+        {
+          keywords: ["best", "love", "beautiful", "good", "bad", "worst", "opinion", "think", "believe", "god", "religion", "faith", "amazing", "terrible", "should", "prefer", "like", "hate", "favorite", "great", "excellent", "awful", "wonderful", "horrible", "fantastic", "disgusting", "i think", "i believe", "in my opinion", "i feel", "seems to me"],
+          score: 50, type: "OPINION", status: "Opinion",
+          reason: "This is a subjective claim based on personal belief, values, or taste. It cannot be objectively proven true or false."
+        },
+        {
+          keywords: ["election", "stolen", "corruption", "politics", "politician", "scandal", "studies show", "researchers claim", "scientists believe", "many people think", "it is said", "allegedly", "supposedly", "rumor has it", "word on street", "according to some", "partial truth"],
+          score: 45, type: "MISLEADING", status: "Misleading",
+          reason: "Political claims often lack critical context. This statement contains elements that may be partially true but are presented in a way that could lead to incorrect conclusions."
+        },
+        {
+          keywords: ["cure", "cancer", "miracle", "health", "doctor", "medicine", "treatment", "therapy", "disease", "virus", "epidemic", "pandemic", "vaccine", "drug"],
+          score: 35, type: "UNVERIFIABLE", status: "Unverifiable",
+          reason: "Medical and health claims require clinical verification. Without specific peer-reviewed evidence, this claim remains speculative and potentially dangerous."
+        },
+        {
+          keywords: ["ai", "artificial intelligence", "machine learning", "robot", "algorithm", "data", "cybersecurity", "blockchain", "quantum computing", "internet of things", "5g", "technology", "software", "hardware", "startup", "innovation"],
+          score: 60, type: "UNVERIFIABLE", status: "Unverifiable",
+          reason: "Claims related to rapidly evolving technology often require up-to-date expert analysis and specific technical details for verification."
+        }
+      ];
 
-      if (falsehoods.some(f => lowerInput.includes(f))) {
-        score = 15;
-        type = "FALSE";
-        status = "Likely Fake";
-        reasoning = "Identified pattern matching known misinformation or pseudo-scientific claims. The statement contradicts well-established scientific principles and consensus data. It is frequently categorized as inaccurate in reputable fact-checking repositories.";
-      } else if (basicFacts.some(f => lowerInput.includes(f))) {
-        score = 95;
-        type = "FACTUAL";
-        status = "Likely True";
-        reasoning = "Recognized as a fundamental scientific or geographical fact. This claim is supported by extensive empirical evidence and scientific consensus globally. It is widely documented in educational and research-based knowledge bases.";
-      } else if (opinions.some(f => lowerInput.includes(f))) {
-        score = 50;
-        type = "OPINION";
-        status = "Opinion";
-        reasoning = "The claim is subjective and depends on personal belief or preference. Because it is non-falsifiable and based on individual values, it cannot be objectively verified or debunked. It remains a matter of personal perspective rather than a verifiable fact.";
+      for (const p of patterns) {
+        if (p.keywords.some(k => lowerInput.includes(k))) {
+          score = p.score;
+          type = p.type;
+          status = p.status;
+          reasoning = p.reason;
+          break;
+        }
       }
 
       aiResult = {
@@ -196,11 +238,11 @@ ${input}
         type,
         credibility_score: score,
         status,
-        explanation: reasoning,
-        confidence: 85,
+        explanation: `⚠️ [LOCAL KNOWLEDGE BACKUP] ${reasoning}`,
+        confidence: 75,
         sources: [
-          { name: "TruthGuard X Intelligence", status: score >= 90 ? "verified" : score <= 30 ? "contradicts" : "no-evidence", url: "#", score: score },
-          { name: "Local Knowledge Buffer", status: score === 100 ? "verified" : "no-evidence", url: "#", score: score - 10 > 0 ? score - 10 : 0 }
+          { name: "TruthGuard X Local Buffer", status: score >= 80 ? "verified" : score <= 30 ? "contradicts" : "no-evidence", url: "#", score: score },
+          { name: "Heuristic Engine V2", status: "no-evidence", url: "#", score: score - 5 > 0 ? score - 5 : 0 }
         ]
       };
     }
